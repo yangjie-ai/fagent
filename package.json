@@ -1,0 +1,24 @@
+{
+  "name": "sgagent",
+  "version": "0.1.0",
+  "description": "Minimal coding agent CLI built on copied pi-agent-core + pi-ai (MiMo only)",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "openai": "6.26.0",
+    "partial-json": "0.1.7",
+    "typebox": "1.1.38"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
