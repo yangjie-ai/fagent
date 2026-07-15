@@ -400,8 +400,9 @@ function isToolError(result) {
 	return typeof exit === "number" && exit !== 0;
 }
 
-// One LLM call — what the model produced this step (thinking / text / toolCall
-// decision). Tool *results* live in their own step (renderToolStep), not here.
+// One LLM call — split into explicit 输入 (new messages this call added) and
+// 输出 (what the model produced: thinking / text / toolCall decision). Tool
+// *results* live in their own step (renderToolStep), not here.
 function renderModelStep(c, k, total) {
 	const u = c.response.usage || {};
 	const stop = c.response.stopReason;
@@ -409,22 +410,31 @@ function renderModelStep(c, k, total) {
 	const thinking = cont.find((b) => b.type === "thinking");
 	const text = cont.find((b) => b.type === "text");
 	const toolCalls = cont.filter((b) => b.type === "toolCall");
-	const parts = [];
-	if (thinking) parts.push(block("🤔", "think", "思考", thinking.thinking));
-	if (text && (text.text || "").trim()) {
-		const isFinal = stop === "stop";
-		parts.push(block(isFinal ? "✅" : "💬", isFinal ? "final" : "act", isFinal ? "最终回复" : "文本", text.text));
-	}
+	const msgs = c.request?.messages || [];
+	const base = c._baseCount ?? 0;
+	const newMsgs = msgs.slice(base);
+	const inputBlocks = newMsgs.map((m, idx) => renderMsg(m, base + idx, base)).join("");
+
+	const outParts = [];
+	if (thinking) outParts.push(block("🤔", "think", "思考", thinking.thinking));
+	if (text && (text.text || "").trim()) outParts.push(block("📝", "final", "文本回复", text.text));
 	for (const tc of toolCalls) {
-		parts.push(`<div class="block tool"><div class="bh tool"><span class="ico">🔧</span>决定调用 · <span class="tn">${esc(tc.name)}</span></div><div class="bb toolcall"><span class="tn">${esc(tc.name)}</span>(<span class="args">${esc(JSON.stringify(tc.arguments))}</span>)</div></div>`);
+		outParts.push(`<div class="block tool"><div class="bh tool"><span class="ico">🔧</span>决定调用工具 · <span class="tn">${esc(tc.name)}</span></div><div class="bb toolcall"><span class="tn">${esc(tc.name)}</span>(<span class="args">${esc(JSON.stringify(tc.arguments))}</span>)</div></div>`);
 	}
-	if (c.response.errorMessage) {
-		parts.push(`<div class="block"><div class="bh res" style="color:var(--err)"><span class="ico">⚠</span>错误</div><div class="bb" style="color:var(--err)">${esc(c.response.errorMessage)}</div></div>`);
-	}
-	parts.push(renderDetail(c));
+	if (c.response.errorMessage) outParts.push(`<div class="block"><div class="bh res" style="color:var(--err)"><span class="ico">⚠</span>错误</div><div class="bb" style="color:var(--err)">${esc(c.response.errorMessage)}</div></div>`);
+
+	// Badge describes THIS call's output (not the stop reason), so it never reads
+	// like a tool-execution step.
+	let outBadge;
+	if (c.response.errorMessage) outBadge = `<span class="badge b-error">出错</span>`;
+	else if (toolCalls.length) outBadge = `<span class="badge b-toolUse">输出 · 将调用 ${esc(toolCalls.map((tc) => tc.name).join(", "))}</span>`;
+	else outBadge = `<span class="badge b-stop">输出 · 文本回复</span>`;
+
 	return `<div class="step ${stop}">
-		<div class="stephead"><span class="sn">步骤 ${k + 1}/${total} · 💬 LLM 调用</span>${badge(stop)}<span class="tok"><span class="tok-new">新增 ${fmtT(u.input)}</span> + <span class="tok-cache">缓存 ${fmtT(u.cacheRead)}</span> · <span class="tok-out">出 ${fmtT(u.output)}</span> · 命中 ${hitRate(u.cacheRead, u.input)}%</span></div>
-		${parts.join("")}
+		<div class="stephead"><span class="sn">步骤 ${k + 1}/${total} · 💬 LLM 调用</span>${outBadge}<span class="tok"><span class="tok-new">新增 ${fmtT(u.input)}</span> + <span class="tok-cache">缓存 ${fmtT(u.cacheRead)}</span> · <span class="tok-out">出 ${fmtT(u.output)}</span> · 命中 ${hitRate(u.cacheRead, u.input)}%</span></div>
+		<div class="rdsec"><div class="rds-l">📥 输入（新增 ${newMsgs.length} 条）</div>${inputBlocks || '<div class="rdmeta">（全部为前缀，无新增）</div>'}</div>
+		<div class="rdsec"><div class="rds-l">📤 输出</div>${outParts.join("") || '<div class="rdmeta">（无输出）</div>'}</div>
+		${renderDetail(c)}
 	</div>`;
 }
 
