@@ -10,9 +10,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "ignore": "^7.0.5",
     "openai": "6.26.0",
     "partial-json": "0.1.7",
-    "typebox": "1.1.38"
+    "typebox": "1.1.38",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

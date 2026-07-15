@@ -1,4 +1,32 @@
-import type { Api, Model, ModelCostRates, ModelThinkingLevel, Usage } from "./types.ts";
+import type {
+	Api,
+	AssistantMessage,
+	Context,
+	Model,
+	ModelCostRates,
+	ModelThinkingLevel,
+	SimpleStreamOptions,
+	Usage,
+} from "./types.ts";
+import type { AssistantMessageEventStream } from "./utils/event-stream.ts";
+
+/**
+ * Minimal model registry surface. pi's full `Models` (provider/auth/refresh) is
+ * not part of this MiMo-only build; only the streaming entry points the agent
+ * harness and compaction use are retained.
+ */
+export interface Models {
+	streamSimple(
+		model: Model<Api>,
+		context: Context,
+		options?: SimpleStreamOptions,
+	): AssistantMessageEventStream;
+	completeSimple(
+		model: Model<Api>,
+		context: Context,
+		options?: SimpleStreamOptions,
+	): Promise<AssistantMessage>;
+}
 
 export function calculateCost<TApi extends Api>(model: Model<TApi>, usage: Usage): Usage["cost"] {
 	const inputTokens = usage.input + usage.cacheRead + usage.cacheWrite;

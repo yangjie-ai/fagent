@@ -8,4 +8,5 @@ export * from "./types.ts";
 export * from "./utils/diagnostics.ts";
 export * from "./utils/event-stream.ts";
 export * from "./utils/json-parse.ts";
+export * from "./utils/retry.ts";
 export * from "./utils/validation.ts";
