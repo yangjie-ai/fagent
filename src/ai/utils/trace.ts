@@ -61,33 +61,61 @@ export function beginLoop(): string {
 }
 
 /**
- * Persist one model call to ./data/<YYYYMMDD>/<loopId>.jsonl — one line per
- * call, one file per loop (one user prompt), grouped under a per-day folder so
- * ./data stays browsable by date without ever deleting history. Top-level
- * `input`/`output` are the plain-text Q&A (easy to spot at a glance); the full
- * `request`/`response` follow for debugging. Stamped with the current loop id.
- * Best-effort: filesystem failures never propagate into the model stream.
+ * Append one trace line to ./data/<YYYYMMDD>/<loopId>.jsonl — shared by model
+ * and tool events. One file per loop (one user prompt), grouped under a per-day
+ * folder. Best-effort: filesystem failures never propagate into the agent.
+ */
+function appendTrace(obj: Record<string, unknown>): void {
+	try {
+		const ts = (obj.timestamp as number) || Date.now();
+		const loop = currentLoopId || stamp(ts);
+		const dir = join("data", loop.slice(0, 8)); // YYYYMMDD per-day folder
+		mkdirSync(dir, { recursive: true });
+		appendFileSync(join(dir, `${loop}.jsonl`), JSON.stringify(obj) + "\n");
+	} catch {
+		// Best-effort trace: never disrupt the agent.
+	}
+}
+
+/**
+ * Persist one LLM call — the request sent and the response produced (content
+ * blocks: thinking/text/toolCall, plus usage & stopReason). Top-level
+ * `input`/`output` are the plain-text Q&A summary; the full `request`/
+ * `response` follow for debugging.
  */
 export function saveModelTrace(
 	request: unknown,
 	response: { timestamp?: number; content?: Array<{ type?: string; text?: string }> },
 ): void {
-	try {
-		const ts = response.timestamp ?? Date.now();
-		const loop = currentLoopId || stamp(ts);
-		const dir = join("data", loop.slice(0, 8)); // YYYYMMDD per-day folder
-		mkdirSync(dir, { recursive: true });
-		const line =
-			JSON.stringify({
-				timestamp: ts,
-				loopId: currentLoopId,
-				input: extractInput(request),
-				output: extractOutput(response),
-				request,
-				response,
-			}) + "\n";
-		appendFileSync(join(dir, `${loop}.jsonl`), line);
-	} catch {
-		// Best-effort trace: never disrupt the model stream.
-	}
+	appendTrace({
+		type: "model",
+		timestamp: response.timestamp ?? Date.now(),
+		loopId: currentLoopId,
+		input: extractInput(request),
+		output: extractOutput(response),
+		request,
+		response,
+	});
+}
+
+/** Persist one tool execution — name, args, result, error flag, duration. */
+export function saveToolTrace(event: {
+	toolCallId: string;
+	toolName: string;
+	args: unknown;
+	result: unknown;
+	isError: boolean;
+	durationMs: number;
+}): void {
+	appendTrace({
+		type: "tool",
+		timestamp: Date.now(),
+		loopId: currentLoopId,
+		toolCallId: event.toolCallId,
+		toolName: event.toolName,
+		args: event.args,
+		result: event.result,
+		isError: event.isError,
+		durationMs: event.durationMs,
+	});
 }

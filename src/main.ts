@@ -4,7 +4,7 @@ import { stdin, stdout } from "node:process";
 import { Agent } from "@earendil-works/pi-agent-core";
 import { streamSimple, type Model } from "@earendil-works/pi-ai/compat";
 import { tools } from "./tools/index.ts";
-import { beginLoop } from "./ai/utils/trace.ts";
+import { beginLoop, saveToolTrace } from "./ai/utils/trace.ts";
 
 // Load `.env` next to this file if present (Node 20.12+). Ignored if missing or unreadable.
 try {
@@ -75,15 +75,30 @@ function fmtTokens(n: number): string {
 	return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
+// Tool-execution timing: args arrive on tool_execution_start, the result on
+// tool_execution_end — stitch them together here, keyed by toolCallId.
+const toolPending = new Map<string, { start: number; args: unknown }>();
+
 agent.subscribe(async (event) => {
 	switch (event.type) {
 		case "tool_execution_start": {
+			toolPending.set(event.toolCallId, { start: Date.now(), args: event.args });
 			const args = JSON.stringify(event.args);
 			const preview = args.length > 200 ? `${args.slice(0, 200)}...` : args;
 			process.stdout.write(`\n  [${event.toolName}] ${preview}\n`);
 			break;
 		}
 		case "tool_execution_end": {
+			const pending = toolPending.get(event.toolCallId);
+			toolPending.delete(event.toolCallId);
+			saveToolTrace({
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				args: pending?.args,
+				result: event.result,
+				isError: event.isError,
+				durationMs: pending ? Date.now() - pending.start : 0,
+			});
 			if (event.isError) {
 				process.stdout.write(`  [${event.toolName}] ✗ error\n`);
 			}

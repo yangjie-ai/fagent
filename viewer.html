@@ -191,7 +191,7 @@ const pad = (n, w = 2) => String(n).padStart(w, "0");
 // Sidebar groups turns by day. The first 8 chars of a trace filename are YYYYMMDD
 // (loop id and the legacy per-call stamp share this prefix); fall back to the ts.
 function dayKey(t) {
-	const f = (t.calls[0]?._file || "").slice(0, 8);
+	const f = (t.steps[0]?._file || "").slice(0, 8);
 	if (/^\d{8}$/.test(f)) return f;
 	const d = new Date(t.ts || 0);
 	return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
@@ -233,31 +233,23 @@ function loopKey(c) {
 	return c.loopId ? "loop:" + c.loopId : "auto:" + userPromptCount(c.request?.messages);
 }
 // Group calls into turns (loops) by loopId (or the derived fallback key).
-function buildTurns(calls) {
+function buildTurns(events) {
 	const turns = [];
 	let cur = null;
-	for (const c of calls) {
-		const key = loopKey(c);
+	for (const e of events) {
+		const key = loopKey(e);
 		if (!cur || cur.key !== key) {
-			cur = { idx: turns.length, key, loopId: c.loopId || "", calls: [] };
+			cur = { idx: turns.length, key, loopId: e.loopId || "", steps: [], modelCalls: [] };
 			turns.push(cur);
 		}
-		cur.calls.push(c);
+		cur.steps.push(e);
+		if (e.kind === "model") cur.modelCalls.push(e);
 	}
-	// Prefix boundary per call. Prompt caching is PREFIX-based & exact-match from
-	// token 0; messages sent in a previous call form the shared prefix (前缀), and
-	// only what THIS call adds (latest assistant reply + tool result, or a new user
-	// prompt) is 新增. base = number of leading prefix messages:
-	//   cacheRead 0 (cold) → no prefix base;
-	//   first ever call    → the system/developer prompt is the prefix base;
-	//   otherwise          → the previous call's message count (delta = new).
-	// NOTE: per-message 前缀/新增 is a STRUCTURAL split ("sent before vs newly
-	// added"), NOT which exact tokens hit cache — that boundary is provider
-	// breakpoint-dependent (block size, often mid-message). The authoritative hit
-	// numbers are the token line's cacheRead and 命中% (hitRate), which are exact.
+	// Prefix boundary per model call (structural split: sent-before vs newly-added).
 	let prevCount = 0;
 	for (const t of turns) {
-		for (const c of t.calls) {
+		t.steps.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+		for (const c of t.modelCalls) {
 			const msgs = c.request?.messages || [];
 			if (msgs.length < prevCount) prevCount = 0; // new session
 			const cacheRead = c.response.usage?.cacheRead || 0;
@@ -270,10 +262,12 @@ function buildTurns(calls) {
 			c._baseCount = base;
 			prevCount = msgs.length;
 		}
-		t.userInput = t.calls[0].input || lastUserText(t.calls[0]);
-		t.tokens = t.calls.reduce((s, c) => s + (c.response.usage?.totalTokens || 0), 0);
-		t.finalStop = t.calls[t.calls.length - 1].response.stopReason;
-		t.ts = t.calls[0].timestamp;
+		const first = t.modelCalls[0];
+		const last = t.modelCalls[t.modelCalls.length - 1];
+		t.userInput = first ? (first.input || lastUserText(first)) : (t.steps[0]?.toolName ? `🔧 ${t.steps[0].toolName}` : "");
+		t.tokens = t.modelCalls.reduce((s, c) => s + (c.response.usage?.totalTokens || 0), 0);
+		t.finalStop = last ? last.response.stopReason : "stop";
+		t.ts = t.steps[0]?.ts || 0;
 	}
 	return turns;
 }
@@ -289,7 +283,7 @@ function renderSidebar(filter) {
 	// Remember which days the user expanded before we rebuild the list.
 	if (!filtering) openDays = new Set([...document.querySelectorAll('#list details[data-day][open]')].map((d) => d.dataset.day));
 	let turns = TURNS;
-	if (f) turns = TURNS.filter((t) => (t.userInput + JSON.stringify(t.calls)).toLowerCase().includes(f));
+	if (f) turns = TURNS.filter((t) => (t.userInput + JSON.stringify(t.steps)).toLowerCase().includes(f));
 	const groups = new Map();
 	for (const t of turns) { const k = dayKey(t); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(t); }
 	const days = [...groups.keys()].sort().reverse();
@@ -307,7 +301,7 @@ function renderSidebar(filter) {
 					<span class="tmeta">${clock(t.ts)}</span>
 				</div>
 				<div class="uinput">${esc(t.userInput)}</div>
-				<div class="tstat">${t.calls.length} 步 · ${fmtT(t.tokens)} token</div>
+				<div class="tstat">${t.steps.length} 步 · ${fmtT(t.tokens)} token</div>
 			</div>`).join("");
 		const open = (filtering || openDays.has(day)) ? " open" : "";
 		return `<details class="day" data-day="${day}"${open}><summary><span>📅 ${fmtDay(day)}</span><span class="cnt">${ts.length} loop · ${fmtT(tok)} token</span></summary>${items}</details>`;
@@ -392,54 +386,75 @@ function setDetailView(btn, mode) {
 	if (raw) raw.style.display = mode === "raw" ? "" : "none";
 }
 
-function renderStep(step, k, total) {
-	const c = step.call;
+// --- tool execution helpers ---
+function toolResultText(result) {
+	if (!result) return "(无结果)";
+	const c = result.content;
+	if (Array.isArray(c)) return c.filter((p) => p.type === "text").map((p) => p.text || "").join("\n") || "(无文本结果)";
+	if (typeof c === "string") return c;
+	return JSON.stringify(result, null, 2);
+}
+// bash-style tools swallow errors: isError=false but details.exitCode≠0.
+function isToolError(result) {
+	const exit = result?.details?.exitCode;
+	return typeof exit === "number" && exit !== 0;
+}
+
+// One LLM call — what the model produced this step (thinking / text / toolCall
+// decision). Tool *results* live in their own step (renderToolStep), not here.
+function renderModelStep(c, k, total) {
 	const u = c.response.usage || {};
 	const stop = c.response.stopReason;
+	const cont = c.response.content || [];
+	const thinking = cont.find((b) => b.type === "thinking");
+	const text = cont.find((b) => b.type === "text");
+	const toolCalls = cont.filter((b) => b.type === "toolCall");
 	const parts = [];
-
-	if (step.thinking) parts.push(block("🤔", "think", "分析", step.thinking.thinking));
-	if (step.text && (step.text.text || "").trim()) {
-		const isFinal = step.isLast && stop === "stop";
-		parts.push(block(isFinal ? "✅" : "💬", isFinal ? "final" : "act", isFinal ? "最终输出" : "文本", step.text.text));
+	if (thinking) parts.push(block("🤔", "think", "思考", thinking.thinking));
+	if (text && (text.text || "").trim()) {
+		const isFinal = stop === "stop";
+		parts.push(block(isFinal ? "✅" : "💬", isFinal ? "final" : "act", isFinal ? "最终回复" : "文本", text.text));
 	}
-	for (const tc of step.toolCalls) {
-		const res = step.results.find((r) => r.tool_call_id === tc.id);
-		const resText = res ? contentToText(res.content) : "(无结果)";
-		parts.push(`<div class="block tool"><div class="bh tool"><span class="ico">🔧</span>工具调用 · <span class="tn">${esc(tc.name)}</span></div><div class="bb toolcall"><span class="tn">${esc(tc.name)}</span>(<span class="args">${esc(JSON.stringify(tc.arguments))}</span>)</div></div>`);
-		parts.push(block("↳", "res", `结果 · ${resText.length} 字符`, resText, { mono: true }));
+	for (const tc of toolCalls) {
+		parts.push(`<div class="block tool"><div class="bh tool"><span class="ico">🔧</span>决定调用 · <span class="tn">${esc(tc.name)}</span></div><div class="bb toolcall"><span class="tn">${esc(tc.name)}</span>(<span class="args">${esc(JSON.stringify(tc.arguments))}</span>)</div></div>`);
 	}
 	if (c.response.errorMessage) {
 		parts.push(`<div class="block"><div class="bh res" style="color:var(--err)"><span class="ico">⚠</span>错误</div><div class="bb" style="color:var(--err)">${esc(c.response.errorMessage)}</div></div>`);
 	}
 	parts.push(renderDetail(c));
-
 	return `<div class="step ${stop}">
-		<div class="stephead"><span class="sn">步骤 ${k + 1}/${total}</span><span class="file" title="trace 文件">${esc(c._file || "")}</span>${badge(stop)}<span class="tok"><span class="tok-new">新增 ${fmtT(u.input)}</span> + <span class="tok-cache">缓存 ${fmtT(u.cacheRead)}</span> · <span class="tok-out">出 ${fmtT(u.output)}</span> · 命中 ${hitRate(u.cacheRead, u.input)}%</span></div>
+		<div class="stephead"><span class="sn">步骤 ${k + 1}/${total} · 💬 LLM 调用</span>${badge(stop)}<span class="tok"><span class="tok-new">新增 ${fmtT(u.input)}</span> + <span class="tok-cache">缓存 ${fmtT(u.cacheRead)}</span> · <span class="tok-out">出 ${fmtT(u.output)}</span> · 命中 ${hitRate(u.cacheRead, u.input)}%</span></div>
+		${parts.join("")}
+	</div>`;
+}
+
+// One tool execution — name, args, result, duration. A real agent step.
+function renderToolStep(e, k, total) {
+	const ok = !e.isError && !isToolError(e.result);
+	const argsText = JSON.stringify(e.args ?? {});
+	const resultText = toolResultText(e.result);
+	const parts = [
+		`<div class="block tool"><div class="bh tool"><span class="ico">▸</span>参数</div><div class="bb toolcall mono">${esc(argsText)}</div></div>`,
+		block("↳", "res", `结果 · ${resultText.length} 字符`, resultText, { mono: true }),
+	];
+	if (!ok) parts.push(`<div class="block"><div class="bh res" style="color:var(--err)"><span class="ico">⚠</span>执行出错</div><div class="bb" style="color:var(--err)">${esc(resultText.slice(0, 500))}</div></div>`);
+	return `<div class="step ${ok ? "stop" : "error"} toolstep">
+		<div class="stephead"><span class="sn">步骤 ${k + 1}/${total} · 🔧 ${esc(e.toolName)}</span><span class="badge ${ok ? "b-stop" : "b-error"}">${ok ? "✓ 完成" : "✗ 出错"}</span><span class="tok">${e.durationMs || 0} ms</span></div>
 		${parts.join("")}
 	</div>`;
 }
 
 function renderTurn(t) {
 	const u = { input: 0, output: 0, cacheRead: 0, reasoning: 0, total: 0 };
-	for (const c of t.calls) { const x = c.response.usage || {}; u.input += x.input||0; u.output += x.output||0; u.cacheRead += x.cacheRead||0; u.reasoning += x.reasoning||0; u.total += x.totalTokens||0; }
+	for (const c of t.modelCalls) { const x = c.response.usage || {}; u.input += x.input||0; u.output += x.output||0; u.cacheRead += x.cacheRead||0; u.reasoning += x.reasoning||0; u.total += x.totalTokens||0; }
 	const realIn = u.input + u.cacheRead;
-	const steps = t.calls.map((c, k) => {
-		const next = t.calls[k + 1];
-		const cont = c.response.content || [];
-		return {
-			call: c,
-			thinking: cont.find((b) => b.type === "thinking"),
-			text: cont.find((b) => b.type === "text"),
-			toolCalls: cont.filter((b) => b.type === "toolCall"),
-			results: next ? (next.request?.messages || []).filter((m) => m.role === "tool") : [],
-			isLast: k === t.calls.length - 1,
-		};
-	});
+	const toolCount = t.steps.filter((s) => s.kind === "tool").length;
+	const total = t.steps.length;
+	const stepsHtml = t.steps.map((s, k) => (s.kind === "tool" ? renderToolStep(s, k, total) : renderModelStep(s, k, total))).join("");
 	return `
 		<div class="loophead">
 			<span class="ln">Loop #${t.idx + 1}</span>
-			<span class="lmeta">${t.calls.length} 步 · ${clock(t.ts)} · 模型 ${esc(t.calls[0].response.model)} · loop ${esc(t.loopId || t.key)}</span>
+			<span class="lmeta">${t.modelCalls.length} 次 LLM 调用 · ${toolCount} 次工具执行 · ${clock(t.ts)} · 模型 ${esc(t.modelCalls[0]?.response.model || "")} · loop ${esc(t.loopId || t.key)}</span>
 			${badge(t.finalStop)}
 		</div>
 		<div class="usage-row">
@@ -456,7 +471,7 @@ function renderTurn(t) {
 		</div>
 
 		<div class="timeline">
-			${steps.map((s, k) => renderStep(s, k, steps.length)).join("")}
+			${stepsHtml}
 		</div>
 	`;
 }
@@ -472,19 +487,30 @@ function selectTurn(i) {
 // separate lines) into CALLS/TURNS, then render. Shared by folder pick, drag,
 // and the auto-load from the local server.
 function ingest(pairs) {
-	const calls = [];
+	const events = [];
 	for (const { name, text } of pairs) {
 		const isJsonl = name.endsWith(".jsonl");
 		try {
 			const rows = isJsonl ? text.split("\n").filter((l) => l.trim()) : [text];
-			for (const r of rows) { const obj = JSON.parse(r); if (obj && obj.request && obj.response) calls.push({ ...obj, _file: name }); }
+			for (const r of rows) {
+				const obj = JSON.parse(r);
+				if (!obj) continue;
+				if (obj.type === "tool" || (obj.toolName && !obj.request)) {
+					events.push({ kind: "tool", ts: obj.timestamp || 0, loopId: obj.loopId || "", toolCallId: obj.toolCallId, toolName: obj.toolName, args: obj.args, result: obj.result, isError: obj.isError, durationMs: obj.durationMs, _file: name });
+				} else if (obj.request && obj.response) {
+					events.push({ ...obj, kind: "model", ts: obj.timestamp || 0, _file: name });
+				}
+			}
 		}
 		catch { /* skip */ }
 	}
-	calls.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-	CALLS = calls;
-	TURNS = buildTurns(calls);
-	$("#summary").innerHTML = TURNS.length ? `<b>${TURNS.length}</b> 个 loop · <b>${CALLS.length}</b> 次调用 · 共 <b>${fmtT(TURNS.reduce((s, t) => s + t.tokens, 0))}</b> token` : "";
+	events.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+	CALLS = events;
+	TURNS = buildTurns(events);
+	const tok = TURNS.reduce((s, t) => s + t.tokens, 0);
+	const mc = events.filter((e) => e.kind === "model").length;
+	const tc = events.filter((e) => e.kind === "tool").length;
+	$("#summary").innerHTML = TURNS.length ? `<b>${TURNS.length}</b> 个 loop · <b>${mc}</b> 次 LLM 调用 · <b>${tc}</b> 次工具执行 · 共 <b>${fmtT(tok)}</b> token` : "";
 	openDays = new Set();
 	renderSidebar("");
 	if (TURNS.length) selectTurn(TURNS[0].idx);
