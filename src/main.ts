@@ -2,11 +2,25 @@
 import * as readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { Agent } from "@earendil-works/pi-agent-core";
-import { streamSimple, getModel, getProviders } from "@earendil-works/pi-ai/compat";
+import { streamSimple, type Model } from "@earendil-works/pi-ai/compat";
 import { tools } from "./tools/index.ts";
+import { beginLoop } from "./ai/utils/trace.ts";
 
-const PROVIDER = "xiaomi-token-plan-ams";
-const MODEL_ID = "mimo-v2.5";
+// Load `.env` next to this file if present (Node 20.12+). Ignored if missing or unreadable.
+try {
+	process.loadEnvFile();
+} catch {}
+
+// OpenAI-compatible endpoint config. Defaults mirror a reasoning model
+// (mimo-v2.5); point BASE_URL at any OpenAI-compatible backend.
+const BASE_URL = process.env.BASE_URL ?? "https://api.xiaomimimo.com/v1";
+const MODEL_ID = process.env.MODEL_ID ?? "mimo-v2.5";
+// REASONING declares whether the model supports thinking (deepseek format:
+// thinking param + reasoning_content). Set false for non-reasoning models.
+const REASONING_RAW = (process.env.REASONING ?? "true").trim().toLowerCase();
+const REASONING = !["false", "0", "no", "off"].includes(REASONING_RAW);
+const CONTEXT_WINDOW = Number(process.env.CONTEXT_WINDOW ?? 1048576);
+const MAX_TOKENS = Number(process.env.MAX_TOKENS ?? 131072);
 
 const SYSTEM_PROMPT = `You are a coding assistant running in a terminal. You can read, write, and edit files, run shell commands, and search code.
 
@@ -21,29 +35,29 @@ Available tools:
 
 Always explore before acting: use ls/grep/read to understand the codebase before making changes. Prefer edit over write for modifying existing files.`;
 
-const model = getModel(PROVIDER, MODEL_ID);
-if (!model) {
-	console.error(`Model not found: ${PROVIDER}/${MODEL_ID}`);
-	console.error("Available providers:", getProviders().map((p) => p.id).join(", "));
-	const all = (await import("@earendil-works/pi-ai/compat")).getModels();
-	console.error("Available models:", all.map((m) => `${m.provider}/${m.id}`).join(", "));
-	process.exit(1);
-}
+const model: Model<"openai-completions"> = {
+	id: MODEL_ID,
+	name: MODEL_ID,
+	api: "openai-completions",
+	provider: "openai-compatible",
+	baseUrl: BASE_URL,
+	reasoning: REASONING,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: CONTEXT_WINDOW,
+	maxTokens: MAX_TOKENS,
+};
 
-const apiKey = process.env.XIAOMI_TOKEN_PLAN_AMS_API_KEY;
+const apiKey = process.env.API_KEY;
 if (!apiKey) {
-	console.error("Missing XIAOMI_TOKEN_PLAN_AMS_API_KEY environment variable.");
-	console.error("Get one at https://xiaomimimo.com and export it:");
-	console.error("  export XIAOMI_TOKEN_PLAN_AMS_API_KEY='your-key'");
+	console.error("Missing API_KEY environment variable.");
+	console.error("Put it in .env:  API_KEY=your-key");
 	process.exit(1);
 }
 
 const agent = new Agent({
 	streamFn: streamSimple,
-	getApiKey: (provider) => {
-		if (provider === "xiaomi-token-plan-ams") return apiKey;
-		return process.env[`${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`];
-	},
+	getApiKey: () => apiKey,
 	initialState: {
 		systemPrompt: SYSTEM_PROMPT,
 		model,
@@ -52,6 +66,14 @@ const agent = new Agent({
 });
 
 let printedLength = 0;
+
+// Per-turn usage accumulator. Listeners are awaited (agent.ts), so this is
+// fully settled before agent.prompt() resolves — safe to read the total after.
+let turnUsage = { input: 0, output: 0, cacheRead: 0, calls: 0 };
+
+function fmtTokens(n: number): string {
+	return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
 
 agent.subscribe(async (event) => {
 	switch (event.type) {
@@ -87,7 +109,18 @@ agent.subscribe(async (event) => {
 		}
 		case "message_end": {
 			if (event.message.role === "assistant") {
-				process.stdout.write("\n");
+				const u = event.message.usage;
+				turnUsage.input += u.input;
+				turnUsage.output += u.output;
+				turnUsage.cacheRead += u.cacheRead;
+				turnUsage.calls += 1;
+				if (event.message.stopReason === "error" && event.message.errorMessage) {
+					process.stderr.write(`\n[error] ${event.message.errorMessage}\n`);
+				} else {
+					process.stdout.write(
+						`\n  [usage] in ${fmtTokens(u.input + u.cacheRead)} · cache ${fmtTokens(u.cacheRead)} · out ${fmtTokens(u.output)}\n`,
+					);
+				}
 				printedLength = 0;
 			}
 			break;
@@ -97,7 +130,7 @@ agent.subscribe(async (event) => {
 
 const rl = readline.createInterface({ input: stdin, output: stdout, prompt: "" });
 
-console.log(`sgagent — MiMo coding agent (${PROVIDER}/${MODEL_ID})`);
+console.log(`sgagent — OpenAI-compatible coding agent (${MODEL_ID} @ ${BASE_URL})`);
 console.log("Type 'exit' to quit.\n");
 
 while (true) {
@@ -108,10 +141,18 @@ while (true) {
 	if (trimmed === "exit" || trimmed === "quit") break;
 
 	printedLength = 0;
+	turnUsage = { input: 0, output: 0, cacheRead: 0, calls: 0 };
+	const loopId = beginLoop();
 	try {
 		await agent.prompt(trimmed);
 	} catch (error: any) {
 		console.error(`\n[error] ${error.message ?? error}`);
+	}
+	if (turnUsage.calls > 0) {
+		const t = turnUsage;
+		process.stdout.write(
+			`  [total] in ${fmtTokens(t.input + t.cacheRead)} · cache ${fmtTokens(t.cacheRead)} · out ${fmtTokens(t.output)}  (${t.calls} call${t.calls > 1 ? "s" : ""} · loop ${loopId})\n`,
+		);
 	}
 	console.log();
 }

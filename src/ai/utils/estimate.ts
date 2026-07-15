@@ -116,17 +116,10 @@ export function estimateContextTokens(context: Context | readonly Message[]): Co
 
 	const estimate = estimateMessages(context.messages);
 	if (estimate.lastUsageIndex !== null) {
-		const addedNames = new Set(
-			context.messages
-				.slice(estimate.lastUsageIndex + 1)
-				.filter((message) => message.role === "toolResult")
-				.flatMap((message) => message.addedToolNames ?? []),
-		);
-		const addedToolTokens = estimateToolsTokens(context.tools?.filter((tool) => addedNames.has(tool.name)));
 		return {
-			tokens: estimate.tokens + addedToolTokens,
+			tokens: estimate.tokens,
 			usageTokens: estimate.usageTokens,
-			trailingTokens: estimate.trailingTokens + addedToolTokens,
+			trailingTokens: estimate.trailingTokens,
 			lastUsageIndex: estimate.lastUsageIndex,
 		};
 	}

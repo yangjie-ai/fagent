@@ -17,8 +17,7 @@
       "@earendil-works/pi-ai": ["./src/ai/index.ts"],
       "@earendil-works/pi-ai/compat": ["./src/ai/compat.ts"],
       "@earendil-works/pi-agent-core": ["./src/agent/index.ts"]
-    },
-    "baseUrl": "."
+    }
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules"]

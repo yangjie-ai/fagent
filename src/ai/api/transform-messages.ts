@@ -61,13 +61,7 @@ function downgradeUnsupportedImages<TApi extends Api>(messages: Message[], model
  * OpenAI Responses API generates IDs that are 450+ chars with special characters like `|`.
  * Anthropic APIs require IDs matching ^[a-zA-Z0-9_-]+$ (max 64 chars).
  */
-export function transformMessages<TApi extends Api>(
-	messages: Message[],
-	model: Model<TApi>,
-	normalizeToolCallId?: (id: string, model: Model<TApi>, source: AssistantMessage) => string,
-): Message[] {
-	// Build a map of original tool call IDs to normalized IDs
-	const toolCallIdMap = new Map<string, string>();
+export function transformMessages<TApi extends Api>(messages: Message[], model: Model<TApi>): Message[] {
 	// Normalize null/undefined content from untyped callers (custom tools, hand-built
 	// histories, old session files) so downstream code can rely on the type contract.
 	const normalizedMessages = messages.map((msg) => (msg.content == null ? { ...msg, content: [] } : msg));
@@ -80,12 +74,8 @@ export function transformMessages<TApi extends Api>(
 			return msg;
 		}
 
-		// Handle toolResult messages - normalize toolCallId if we have a mapping
+		// Handle toolResult messages
 		if (msg.role === "toolResult") {
-			const normalizedId = toolCallIdMap.get(msg.toolCallId);
-			if (normalizedId && normalizedId !== msg.toolCallId) {
-				return { ...msg, toolCallId: normalizedId };
-			}
 			return msg;
 		}
 
@@ -131,14 +121,6 @@ export function transformMessages<TApi extends Api>(
 					if (!isSameModel && toolCall.thoughtSignature) {
 						normalizedToolCall = { ...toolCall };
 						delete (normalizedToolCall as { thoughtSignature?: string }).thoughtSignature;
-					}
-
-					if (!isSameModel && normalizeToolCallId) {
-						const normalizedId = normalizeToolCallId(toolCall.id, model, assistantMsg);
-						if (normalizedId !== toolCall.id) {
-							toolCallIdMap.set(toolCall.id, normalizedId);
-							normalizedToolCall = { ...normalizedToolCall, id: normalizedId };
-						}
 					}
 
 					return normalizedToolCall;

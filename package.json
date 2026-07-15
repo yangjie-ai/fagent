@@ -6,6 +6,7 @@
   "private": true,
   "scripts": {
     "start": "tsx src/main.ts",
+    "view": "tsx src/view.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
