@@ -9,7 +9,11 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { encodeCwd } from "./agent/harness/session/jsonl-repo.ts";
+// encodeCwd 本地实现（与 src/agent/harness/session/jsonl-repo.ts:34 同逻辑）。core 镜像不 export 它，
+// 应用层自带副本，保持 src/agent/ 与 pi 字节级一致。同步见 scripts/sync-agent.sh。
+function encodeCwd(cwd: string): string {
+	return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+}
 
 export interface Workspace {
 	/** 目标项目绝对路径(identity)。 */

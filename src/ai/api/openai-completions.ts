@@ -337,7 +337,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
-				maxRetries: options?.maxRetries ?? 0,
+				maxRetries: options?.maxRetries ?? Number(process.env.RETRY_MAX_ATTEMPTS ?? 5),
 			};
 			const { data: openaiStream, response } = await client.chat.completions
 				.create(params, requestOptions)

@@ -11,7 +11,6 @@ import {
 	type ToolResultMessage,
 	validateToolArguments,
 } from "@earendil-works/pi-ai/compat";
-import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import type {
 	AgentContext,
 	AgentEvent,
@@ -24,29 +23,6 @@ import type {
 } from "./types.ts";
 
 export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
-
-// Auto-retry of transient provider errors (500/overloaded/timeout/network).
-// Mirrors pi's retry policy (coding-agent/agent-session.ts _prepareRetry): classify
-// the error, drop the failed assistant turn, wait with exponential backoff, restart.
-// Budget resets on every successful turn.
-const RETRY_MAX_ATTEMPTS = Number(process.env.RETRY_MAX_ATTEMPTS ?? 5);
-const RETRY_BASE_DELAY_MS = Number(process.env.RETRY_BASE_DELAY_MS ?? 2000);
-
-/** Resolve after `ms`, rejecting early if `signal` aborts. */
-function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
-	return new Promise((resolve, reject) => {
-		if (signal?.aborted) return reject(new Error("Aborted"));
-		const onAbort = () => {
-			clearTimeout(id);
-			reject(new Error("Aborted"));
-		};
-		const id = setTimeout(() => {
-			signal?.removeEventListener("abort", onAbort);
-			resolve();
-		}, ms);
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
-}
 
 /**
  * Start an agent loop with a new prompt message.
@@ -193,7 +169,6 @@ async function runLoop(
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
 	while (true) {
 		let hasMoreToolCalls = true;
-		let retryAttempts = 0;
 
 		// Inner loop: process tool calls and steering messages
 		while (hasMoreToolCalls || pendingMessages.length > 0) {
@@ -219,39 +194,10 @@ async function runLoop(
 			newMessages.push(message);
 
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
-				// Retry transient provider errors (not user aborts) with exponential backoff.
-				if (
-					message.stopReason === "error" &&
-					isRetryableAssistantError(message) &&
-					retryAttempts < RETRY_MAX_ATTEMPTS
-				) {
-					retryAttempts++;
-					// Drop the failed assistant turn from context and the run log so the
-					// retry restarts from the same state as the original request.
-					currentContext.messages.pop();
-					newMessages.pop();
-					const delayMs = RETRY_BASE_DELAY_MS * 2 ** (retryAttempts - 1);
-					process.stderr.write(
-						`[retry] provider error, attempt ${retryAttempts}/${RETRY_MAX_ATTEMPTS} in ${delayMs}ms: ${
-							message.errorMessage ?? "unknown"
-						}\n`,
-					);
-					try {
-						await abortableSleep(delayMs, signal);
-					} catch {
-						// Aborted during backoff — stop like an explicit abort.
-						await emit({ type: "turn_end", message, toolResults: [] });
-						await emit({ type: "agent_end", messages: newMessages });
-						return;
-					}
-					continue;
-				}
 				await emit({ type: "turn_end", message, toolResults: [] });
 				await emit({ type: "agent_end", messages: newMessages });
 				return;
 			}
-			// Turn succeeded — reset the retry budget for subsequent turns.
-			retryAttempts = 0;
 
 			// Check for tool calls
 			const toolCalls = message.content.filter((c) => c.type === "toolCall");
