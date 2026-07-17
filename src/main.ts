@@ -103,9 +103,32 @@ function messageText(content: unknown): string {
 	return "";
 }
 
-// 截断长文本，避免历史回显刷屏。
-function clip(s: string, max = 500): string {
-	return s.length > max ? `${s.slice(0, max).trimEnd()} …(${s.length} 字)` : s;
+// 截断长文本，避免历史回显刷屏。保留结尾（最近的内容对"接着聊"最有用），省略开头。
+function clip(s: string, max = 2000): string {
+	if (s.length <= max) return s;
+	const tail = s.slice(s.length - max).trimStart();
+	return `…(共 ${s.length} 字，前略) ${tail}`;
+}
+
+// 单行预览：折叠空白、超长截断（取开头作为主题，用于会话列表）。
+function oneLinePreview(s: string, max = 70): string {
+	const flat = s.replace(/\s+/g, " ").trim();
+	return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+// 取会话里第一条用户提问的文本。用 getEntries 而非 buildContext：
+// 即便发生过 compaction，也能拿到最初的那个问题（buildContext 可能把早期消息替换成摘要）。
+async function firstUserQuestion(session: Session): Promise<string> {
+	const entries = await session.getEntries();
+	for (const e of entries) {
+		if (e.type !== "message") continue;
+		const msg = e.message as { role: string; content: unknown };
+		if (msg.role === "user") {
+			const t = messageText(msg.content);
+			if (t) return t;
+		}
+	}
+	return "";
 }
 
 // 恢复历史会话后，把之前的对话主线（用户提问 / 模型文本回复）回显到终端，
@@ -143,7 +166,9 @@ async function pickSession(): Promise<Session> {
 		const m = list[i];
 		const d = new Date(m.createdAt);
 		const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-		console.log(`  [${i + 1}] ${stamp}  ·  ${m.id.slice(0, 8)}`);
+		const sess = await repo.open(m);
+		const q = oneLinePreview(await firstUserQuestion(sess));
+		console.log(`  [${i + 1}] ${stamp}  ·  ${q || "(无文本内容)"}`);
 	}
 	console.log("  [0] 新建会话");
 	while (true) {
