@@ -7,7 +7,8 @@
   "scripts": {
     "start": "tsx src/main.ts",
     "view": "tsx src/view.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:tools": "tsx scripts/test-tools.ts"
   },
   "dependencies": {
     "ignore": "^7.0.5",
