@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 let currentLoopId = "";
+let currentDataDir = "data";
 
 const pad = (n: number, w = 2) => String(n).padStart(w, "0");
 
@@ -55,7 +56,8 @@ function extractOutput(response: { content?: Array<{ type?: string; text?: strin
  * prompt produced them — no inference from stopReason or history. Call this
  * right before agent.prompt().
  */
-export function beginLoop(): string {
+export function beginLoop(dataDir?: string): string {
+	currentDataDir = dataDir ?? "data";
 	currentLoopId = stamp(Date.now());
 	return currentLoopId;
 }
@@ -69,7 +71,7 @@ function appendTrace(obj: Record<string, unknown>): void {
 	try {
 		const ts = (obj.timestamp as number) || Date.now();
 		const loop = currentLoopId || stamp(ts);
-		const dir = join("data", loop.slice(0, 8)); // YYYYMMDD per-day folder
+		const dir = join(currentDataDir, loop.slice(0, 8)); // YYYYMMDD per-day folder
 		mkdirSync(dir, { recursive: true });
 		appendFileSync(join(dir, `${loop}.jsonl`), JSON.stringify(obj) + "\n");
 	} catch {

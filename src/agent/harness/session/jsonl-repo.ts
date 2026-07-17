@@ -31,7 +31,7 @@ type JsonlSessionRepoFileSystem = Pick<
 	| "remove"
 >;
 
-function encodeCwd(cwd: string): string {
+export function encodeCwd(cwd: string): string {
 	return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 }
 

@@ -7,10 +7,50 @@ import { streamSimple as compatStreamSimple, type Model } from "@earendil-works/
 import { NodeExecutionEnv } from "./agent/harness/env/nodejs.ts";
 import { tools } from "./tools/index.ts";
 import { beginLoop, saveToolTrace } from "./ai/utils/trace.ts";
+import { join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { listWorkspaces, migrateWorkspace, parseWorkspaceArg, touchWorkspace, type Workspace } from "./config.ts";
 
-// Load `.env` next to this file if present (Node 20.12+). Ignored if missing or unreadable.
+// Workspace:解析目标项目(--workspace 指定,默认 cwd),状态集中到 ~/.fagent。
+// 必须在读取任何 env 之前完成——.env 从 home + workspace 两处加载。
+const { explicit, migrate } = parseWorkspaceArg(process.argv.slice(2));
+if (migrate) {
+	migrateWorkspace(explicit);
+	process.exit(0);
+}
+let WS: Workspace;
+if (explicit) {
+	// 显式 --workspace 路径必须真实存在,否则给友好报错(而不是 chdir 时吐原始栈,
+	// 也不会先被 touchWorkspace 注册成垃圾桶)。
+	// 容忍 Windows 风格反斜杠(WSL 常从资源管理器/IDE 粘贴):把 \ 当 / 用。
+	// ⚠️ 必须给路径加【单/双引号】传进来——bash 会把"未加引号"的反斜杠当转义符
+	//    吃掉,程序根本收不到它们,这步 replace 也就无从下手。
+	const wsPath = resolve(explicit.replace(/\\/g, "/"));
+	if (!existsSync(wsPath)) {
+		console.error(`工作区目录不存在: ${wsPath}`);
+		if (!explicit.includes("/") && !explicit.includes("\\")) {
+			// 参数里一个分隔符都没有 → 典型的"反斜杠被 bash 吃掉"症状
+			console.error("看起来 bash 吃掉了未加引号的反斜杠。请加单引号传路径:");
+			console.error("  npm start -- --workspace '\\home\\you\\project'");
+			console.error("或直接用正斜杠:  npm start -- --workspace /home/you/project");
+		} else {
+			console.error('提示:WSL/Linux 路径分隔符是 "/",不是 "\\"。');
+		}
+		process.exit(1);
+	}
+	WS = touchWorkspace(wsPath);
+} else if (process.argv.length === 2 && listWorkspaces().length > 0) {
+	// 裸调用且有已知工作区 → 让用户选;否则直接用 cwd(最少意外)。
+	WS = await pickWorkspace();
+} else {
+	WS = touchWorkspace(process.cwd());
+}
+process.chdir(WS.ws); // 唯一真相源:之后 process.cwd() === WS.ws,工具/bash/pickSession 都跟上
 try {
-	process.loadEnvFile();
+	process.loadEnvFile(join(WS.home, ".env")); // 全局 LLM 配置先
+} catch {}
+try {
+	process.loadEnvFile(); // 再 workspace/.env(已 chdir),项目级覆盖全局
 } catch {}
 
 // OpenAI-compatible endpoint config. Defaults mirror a reasoning model
@@ -73,7 +113,7 @@ const models: Models = {
 
 // 会话持久化：每个 cwd 的历史落到 .sessions/<encodeCwd(cwd)>/<ts>_<id>.jsonl，
 // harness 在每条 message_end 后自动追加（session.appendMessage），无需手动 save。
-const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: ".sessions" });
+const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: WS.sessionsRoot });
 
 let printedLength = 0;
 
@@ -182,6 +222,37 @@ async function pickSession(): Promise<Session> {
 	}
 }
 
+// 启动时让用户选一个已知 workspace,或新建(当前目录)。镜像 pickSession 的交互。
+// 用函数内自建的 readline——主 rl 此刻还没创建。
+async function pickWorkspace(): Promise<Workspace> {
+	const known = listWorkspaces();
+	const cwd = process.cwd();
+	if (known.length === 0) return touchWorkspace(cwd);
+	const pad2 = (n: number) => String(n).padStart(2, "0");
+	console.log("已知工作区（按最近使用排序）：");
+	for (let i = 0; i < known.length; i++) {
+		const m = known[i];
+		const d = new Date(m.lastUsed);
+		const stamp = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+		console.log(`  [${i + 1}] ${m.name}  ·  ${m.path}  ·  ${stamp}`);
+	}
+	console.log(`  [0] 新建（当前目录: ${cwd}）`);
+	const rl2 = readline.createInterface({ input: stdin, output: stdout, prompt: "" });
+	try {
+		while (true) {
+			const ans = await rl2.question(`选择 [0-${known.length}]: `).catch(() => null);
+			if (ans === null) process.exit(0);
+			const trimmed = ans.trim();
+			const n = Number(trimmed);
+			if (trimmed === "0") return touchWorkspace(cwd);
+			if (Number.isInteger(n) && n >= 1 && n <= known.length) return touchWorkspace(known[n - 1].path);
+			console.log("无效选择，请重试。");
+		}
+	} finally {
+		rl2.close();
+	}
+}
+
 const session = await pickSession();
 await printHistory(session);
 
@@ -270,7 +341,7 @@ while (true) {
 
 	printedLength = 0;
 	turnUsage = { input: 0, output: 0, cacheRead: 0, calls: 0 };
-	const loopId = beginLoop();
+	const loopId = beginLoop(WS.dataDir);
 	try {
 		await harness.prompt(trimmed);
 	} catch (error: any) {

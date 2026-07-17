@@ -6,9 +6,12 @@
 import { createServer } from "node:http";
 import { readFile, readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { getWorkspace, parseWorkspaceArg } from "./config.ts";
 
 const PORT = Number(process.env.VIEW_PORT) || 4789;
-const ROOT = process.cwd();
+const WS = getWorkspace(parseWorkspaceArg(process.argv.slice(2)).explicit);
+const VIEWER_HTML = fileURLToPath(new URL("../viewer.html", import.meta.url));
 
 /** Recursively collect every .json / .jsonl trace under `dir`. */
 async function walk(dir: string, out: string[] = []): Promise<string[]> {
@@ -25,7 +28,7 @@ const server = createServer(async (req, res) => {
 		if (req.url === "/api/traces") {
 			let files: string[] = [];
 			try {
-				files = await walk(join(ROOT, "data"));
+				files = await walk(WS.dataDir);
 			} catch {
 				// No data/ yet → empty list, page shows the empty state.
 			}
@@ -38,7 +41,7 @@ const server = createServer(async (req, res) => {
 			return;
 		}
 		if (req.url === "/" || req.url === "/viewer.html") {
-			const html = await readFile(join(ROOT, "viewer.html"), "utf8");
+			const html = await readFile(VIEWER_HTML, "utf8");
 			res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
 			res.end(html);
 			return;
@@ -52,5 +55,5 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-	console.log(`viewer → http://localhost:${PORT}   (data: ${join(ROOT, "data")})`);
+	console.log(`viewer → http://localhost:${PORT}   (data: ${WS.dataDir})`);
 });
