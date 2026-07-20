@@ -2,7 +2,7 @@
 
 # sgagent
 
-**A minimal, self-contained coding agent CLI.**  
+**A minimal coding agent — read the code, watch every loop run.**  
 OpenAI-compatible · streaming · default MiMo
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
@@ -19,18 +19,35 @@ OpenAI-compatible · streaming · default MiMo
 
 ## What is sgagent?
 
-sgagent is a tiny terminal coding agent. It can read, write, and edit files, run shell commands, and search a codebase — driven by any OpenAI-compatible chat model (it ships configured for [MiMo](https://www.xiaomimimo.com/) out of the box).
+sgagent is a **minimal coding agent built for learning**. The goal isn't to ship features — it's to let you **understand how an agent loop actually runs**, by reading a small, complete codebase and then watching real executions.
 
-It is **fully self-contained**: the [`pi-agent-core`](https://github.com/earendil-works/pi) (agent harness) and [`pi-ai`](https://github.com/earendil-works/pi) (model layer) source is **vendored** into [`src/agent`](./src/agent) and [`src/ai`](./src/ai), aliased through `tsconfig` `paths` (`@earendil-works/*` → local source). There are **no external pi npm dependencies** — `git clone` + `npm install` and you're running.
+It is **derived from [Pi](https://github.com/earendil-works/pi)**: Pi's agent core (`pi-agent-core`) and model layer (`pi-ai`) are **vendored** into [`src/agent`](./src/agent) and [`src/ai`](./src/ai), and Pi's coding tools are **adapted and merged into 7 tools** in [`src/tools`](./src/tools). The result is one tiny, readable coding agent — no framework magic, everything is in the repo (`git clone` + `npm install` and you're running; no external pi npm deps).
 
-sgagent was built to study and borrow from Pi's context-management design — specifically to fix the classic failure mode where *a single `read` blows up the whole context window*. The tool layer enforces per-call output truncation and paging (see [How it works](#how-it-works)).
+**One prompt = one loop.** You type a prompt, the agent streams a reply, calls tools, and loops until the task is done. Every model call and every tool execution in that loop is recorded to disk, and **[`viewer.html`](./viewer.html)** replays the whole thing as a step-by-step timeline — the inputs it saw, the cache it hit, what it thought, which tools it chose and why, and the raw request/response for each call. **That timeline is the point**: it turns an opaque agent into something you can actually study.
+
+> What a single loop teaches: how context grows turn by turn, where prompt caching pays off, how a tool call is decided and executed, and where the classic *"one `read` blows up the whole context window"* failure comes from — and how the tool layer defends against it (see [How it works](#how-it-works)).
+
+## Watch a loop with viewer.html
+
+This is the learning lens. Each prompt you send runs as one **loop** and is recorded to a JSONL file; `viewer.html` turns that file into a readable timeline.
+
+**Launch it** — `npm run view`, then open the printed URL (`http://localhost:<VIEW_PORT>`, default `4789`). It auto-loads every trace from the workspace. Or open [`viewer.html`](./viewer.html) directly and pick / drag-drop the `data` folder.
+
+**What you see** — a sidebar of loops grouped by day; click one to open a **user-input bubble** (the prompt that started the loop), **5 token tiles** (实际输入 real input / 缓存命中 cache hit + hit-rate % / 输出 output / 思考 reasoning / 合计 total), and a **timeline of steps**. Each step is one of two kinds:
+
+- 💬 **LLM call** — the request is split into **new vs cached prefix**, then the output: thinking blocks 🤔, the text reply 📝, and the **tool-call decisions** 🔧 it made. A per-call line shows new/cache/out tokens and hit rate. Expand `请求/响应详情` for the **raw request and response JSON**.
+- 🔧 **tool execution** — the tool name, args, full result, character count, duration (ms), and a ✓ 完成 / ✗ 出错 badge.
+
+> Read a few loops and you'll see, concretely: how the context grows each turn, where prompt caching actually pays off, how a tool call is chosen and run, and how one bad `read` is kept from filling the window.
+
+Traces live at `~/.fagent/workspaces/<bucket>/data/<YYYYMMDD>/<loopId>.jsonl` — **one file per loop**, two record types (`model`, `tool`). See [`src/ai/utils/trace.ts`](./src/ai/utils/trace.ts) (`beginLoop` / `saveModelTrace` / `saveToolTrace`).
 
 ## Features
 
+- **A trace viewer, front and center** — every loop records each model call and tool execution; `npm run view` serves [`viewer.html`](./viewer.html) as a timeline you read to learn how the loop ran. See [Watch a loop with viewer.html](#watch-a-loop-with-viewerhtml).
 - **7 coding tools with context discipline** — `read` truncates to 2000 lines / 50 KB (whichever hits first) and supports `offset`/`limit` paging; `bash` keeps the tail. One tool call can no longer fill the context.
 - **Multi-project workspaces** — all state (sessions, traces) lives in `~/.fagent`, keyed per project. Switch projects with `--workspace`; the target project directory stays clean (no `.sessions/` or `data/` pollution).
 - **Persistent sessions + resume** — every project's conversation history is persisted to JSONL; on start you can pick a past session and the text thread is replayed.
-- **Model + tool traces + browser viewer** — every loop streams model and tool traces to disk; `npm run view` serves a local page to inspect them.
 - **Streaming with reasoning** — live token streaming, including thinking/reasoning content for reasoning models.
 - **Resilient calls** — automatic retry with a classifier + exponential backoff (covers 4xx/5xx).
 
@@ -80,7 +97,7 @@ sgagent reads environment variables, loaded from two `.env` files in order (late
 
 **Resume** — on start, pick a past session from the history list; its text thread is replayed so you can continue the conversation.
 
-**Viewer** — `npm run view`, then open the printed URL to inspect model/tool traces in the browser.
+**Viewer** — `npm run view`, then open the printed URL. See [Watch a loop with viewer.html](#watch-a-loop-with-viewerhtml).
 
 ## Project structure
 
@@ -121,7 +138,7 @@ sgagent keeps a long-running agent loop from blowing its context through three l
 
 ## Acknowledgements
 
-The agent-core and AI layers are vendored from [`earendil-works/pi`](https://github.com/earendil-works/pi) (MIT, © 2025 Mario Zechner). The 7 coding tools are adapted from pi-coding-agent.
+The agent-core and AI layers are vendored from [`earendil-works/pi`](https://github.com/earendil-works/pi) (MIT, © 2025 Mario Zechner). The 7 coding tools are adapted and merged from pi-coding-agent.
 
 ## License
 

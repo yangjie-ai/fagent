@@ -2,7 +2,7 @@
 
 # sgagent
 
-**一个极简、自包含的 coding agent CLI。**  
+**一个能从头读懂、能看见每一轮运行的极简 coding agent。**  
 OpenAI 兼容 · 流式 · 默认 MiMo
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
@@ -19,18 +19,35 @@ OpenAI 兼容 · 流式 · 默认 MiMo
 
 ## sgagent 是什么?
 
-sgagent 是一个极简的终端 coding agent。它能读写、编辑文件、跑 shell 命令、搜代码,由任意 OpenAI 兼容的对话模型驱动(开箱默认配 [MiMo](https://www.xiaomimimo.com/))。
+sgagent 是一个**为学习而生的极简 coding agent**。它的目标不是堆功能,而是让你**看懂一个 agent loop 到底怎么跑**——通过读一份小而完整的代码,再看真实运行轨迹。
 
-它是**完全自包含**的:[`pi-agent-core`](https://github.com/earendil-works/pi)(agent harness)和 [`pi-ai`](https://github.com/earendil-works/pi)(模型层)的源码已 **vendored** 进 [`src/agent`](./src/agent) 和 [`src/ai`](./src/ai),经 `tsconfig` 的 `paths` 别名(`@earendil-works/*` → 本地源)解析。**没有任何外部 pi npm 依赖**——`git clone` + `npm install` 就能跑。
+它**改编自 [Pi](https://github.com/earendil-works/pi)**:把 Pi 的 agent core(`pi-agent-core`)和模型层(`pi-ai`)**vendored** 进 [`src/agent`](./src/agent) 和 [`src/ai`](./src/ai),把 Pi 的 coding 工具**改编合并成 7 个工具**放进 [`src/tools`](./src/tools)。最终得到一个极小、可读的 coding agent——没有框架魔法,一切都在仓库里(`git clone` + `npm install` 就能跑,没有任何外部 pi npm 依赖)。
 
-做 sgagent 是为了学习并借鉴 Pi 的上下文管理设计——尤其是解决那个经典痛点:*一次 `read` 就把整个上下文窗口撑爆*。工具层强制了每次调用的输出截断与分页(见[工作原理](#工作原理))。
+**一条 prompt = 一轮 loop。** 你输入一条 prompt,agent 流式回复、调用工具、循环直到任务完成。这轮 loop 里每一次模型调用、每一次工具执行都会落盘,**[`viewer.html`](./viewer.html)** 把整个过程重放成一条分步时间线——它看到的输入、命中的缓存、它想了什么、选了哪些工具及为什么、每次调用的原始请求/响应。**这条时间线才是重点**:它把一个黑盒 agent 变成你能真正研究的东西。
+
+> 一轮 loop 能学到什么:上下文怎么逐轮增长、缓存命中落在哪、一个工具调用是怎么决定并执行的,以及经典痛点*“一次 `read` 就把整个上下文窗口撑爆”*从哪来——工具层如何防御(见[工作原理](#工作原理))。
+
+## 用 viewer.html 看运行轨迹
+
+这就是学习用的放大镜。你发的每一条 prompt 都跑成**一轮 loop** 并落进一个 JSONL 文件;`viewer.html` 把它变成一条可读的时间线。
+
+**启动** —— `npm run view`,打开打印的 URL(`http://localhost:<VIEW_PORT>`,默认 `4789`),会自动加载该工作区的全部 trace。也可以直接打开 [`viewer.html`](./viewer.html),选择 / 拖入 `data` 文件夹。
+
+**你会看到** —— 侧边栏按天分组的 loop 列表;点开一个,是一个**用户输入气泡**(触发这轮 loop 的 prompt)、**5 个 token 磁贴**(实际输入 / 缓存命中 + 命中率% / 输出 / 思考 / 合计),以及一条**步骤时间线**。每个步骤是两种之一:
+
+- 💬 **LLM 调用** —— 请求被拆成**新增 vs 命中的缓存前缀**,输出则是:思考块 🤔、文本回复 📝、以及它做出的**工具调用决策** 🔧。每行显示新增/缓存/输出 token 与命中率。展开 `请求/响应详情` 看**原始请求与响应 JSON**。
+- 🔧 **工具执行** —— 工具名、参数、完整结果、字符数、耗时(ms),以及 ✓ 完成 / ✗ 出错 标记。
+
+> 多读几轮 loop,你会具体地看到:上下文每轮怎么涨、缓存到底在哪省钱、一个工具调用是怎么被选中并执行的、一次糟糕的 `read` 是怎么被挡在窗口之外的。
+
+trace 落在 `~/.fagent/workspaces/<bucket>/data/<YYYYMMDD>/<loopId>.jsonl`——**一轮 loop 一个文件**,两种记录类型(`model`、`tool`)。见 [`src/ai/utils/trace.ts`](./src/ai/utils/trace.ts)(`beginLoop` / `saveModelTrace` / `saveToolTrace`)。
 
 ## 特性
 
+- **把 trace viewer 摆在 C 位** —— 每轮 loop 都记录每一次模型调用和工具执行;`npm run view` 把 [`viewer.html`](./viewer.html) 作为一条可读时间线提供,让你看清这轮 loop 到底怎么跑。见[用 viewer.html 看运行轨迹](#用-viewerhtml-看运行轨迹)。
 - **7 个 coding 工具 + 上下文纪律** —— `read` 截断到 2000 行 / 50KB(先到为准),支持 `offset`/`limit` 分页;`bash` 保留尾部。单次工具调用不会再把上下文填满。
 - **多项目工作区** —— 所有状态(会话、trace)集中在 `~/.fagent`,按项目分桶。用 `--workspace` 切换项目;目标项目目录保持干净(不污染 `.sessions/` 或 `data/`)。
 - **会话持久化 + 续聊** —— 每个项目的对话历史落到 JSONL;启动可选历史会话,并回显文本主线。
-- **model + tool trace + 浏览器 viewer** —— 每个循环把模型和工具 trace 流式落盘;`npm run view` 起一个本地页面查看。
 - **流式输出 + 推理** —— 实时 token 流式,含推理模型的 thinking/reasoning 内容。
 - **健壮调用** —— 自动重试 + 分类器 + 指数退避(覆盖 4xx/5xx)。
 
@@ -80,7 +97,7 @@ sgagent 读取环境变量,按顺序从两个 `.env` 加载(后者覆盖前者):
 
 **续聊** —— 启动时从历史列表选一条,会回显其文本主线,接着聊。
 
-**viewer** —— `npm run view`,然后打开打印的 URL,在浏览器里查看 model/tool trace。
+**viewer** —— `npm run view`,然后打开打印的 URL。见[用 viewer.html 看运行轨迹](#用-viewerhtml-看运行轨迹)。
 
 ## 项目结构
 
@@ -121,7 +138,7 @@ sgagent 通过三层防线防止长跑的 agent loop 撑爆上下文(借鉴自 P
 
 ## 致谢
 
-agent-core 与 AI 层 vendored 自 [`earendil-works/pi`](https://github.com/earendil-works/pi)(MIT,© 2025 Mario Zechner)。7 个 coding 工具改编自 pi-coding-agent。
+agent-core 与 AI 层 vendored 自 [`earendil-works/pi`](https://github.com/earendil-works/pi)(MIT,© 2025 Mario Zechner)。7 个 coding 工具改编合并自 pi-coding-agent。
 
 ## License
 
