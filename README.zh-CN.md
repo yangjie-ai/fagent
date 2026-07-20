@@ -61,7 +61,7 @@ trace 落在 `~/.fagent/workspaces/<bucket>/data/<YYYYMMDD>/<loopId>.jsonl`—�
 git clone https://github.com/yangjie-ai/fagent.git
 cd fagent
 npm install
-printf 'API_KEY=你的-key\n' > .env
+cp .env.sample .env   # 然后编辑 .env,填入 API_KEY
 npm start
 ```
 

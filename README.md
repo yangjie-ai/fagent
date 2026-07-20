@@ -61,7 +61,7 @@ Traces live at `~/.fagent/workspaces/<bucket>/data/<YYYYMMDD>/<loopId>.jsonl` â€
 git clone https://github.com/yangjie-ai/fagent.git
 cd fagent
 npm install
-printf 'API_KEY=your-key\n' > .env
+cp .env.sample .env   # then edit .env and fill in API_KEY
 npm start
 ```
 
